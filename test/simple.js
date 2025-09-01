@@ -1,8 +1,7 @@
 var unbzip2Stream = require('../');
-var concat = require('concat-stream');
 var test = require('tape');
 var fs = require('fs');
-var { Readable } = require('stream');
+var { Readable } = require('node:stream');
 
 test('accepts data in both write and end', async function (t) {
     t.plan(1);

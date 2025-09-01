@@ -8,10 +8,10 @@ interface BitReader {
 
 // returns a function that reads bits.
 // takes a buffer iterator as input
-export = function bitIterator(nextBuffer: () => Buffer): BitReader {
+export = function bitIterator(nextBuffer: () => Uint8Array): BitReader {
     let bit: number = 0;
     let byte: number = 0;
-    let bytes: Buffer = nextBuffer();
+    let bytes: Uint8Array = nextBuffer();
     const f = function(n: number | null): number {
         if (n === null && bit != 0) {  // align to byte boundary
             bit = 0;

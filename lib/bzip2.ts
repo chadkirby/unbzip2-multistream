@@ -62,8 +62,8 @@ interface Bzip2Context {
     selectors: Uint8Array;
     Bzip2Error: typeof Bzip2Error;
     crcTable: readonly number[];
-    array(bytes: Buffer): BitReader;
-    simple(srcbuffer: Buffer, stream: Stream): void;
+    array(bytes: Uint8Array): BitReader;
+    simple(srcbuffer: Uint8Array, stream: Stream): void;
     header(bits: BitReader): number;
     decompress(bits: BitReader, stream: Stream, buf: Int32Array, bufsize: number, streamCRC: number | null): number | null;
 }
@@ -144,7 +144,7 @@ const bzip2: Bzip2Context = {
     mtfSymbol: new Int32Array(256),
     selectors: new Uint8Array(0x8000),
 
-    array(bytes: Buffer): BitReader {
+    array(bytes: Uint8Array): BitReader {
         let bit: number = 0;
         let byte: number = 0;
         const BITMASK: readonly number[] = [0, 0x01, 0x03, 0x07, 0x0F, 0x1F, 0x3F, 0x7F, 0xFF];
@@ -177,7 +177,7 @@ const bzip2: Bzip2Context = {
         };
     },
 
-    simple(srcbuffer: Buffer, stream: Stream): void {
+    simple(srcbuffer: Uint8Array, stream: Stream): void {
         const bits = this.array(srcbuffer);
         const size: number = this.header(bits);
         let ret: boolean = false;
