@@ -1,94 +1,63 @@
-import through = require('through');
 import bz2 = require('./lib/bzip2');
 import bitIterator = require('./lib/bit_iterator');
+import { Readable } from 'node:stream';
 
-type ThroughStream = through.ThroughStream;
+async function* unbzip2Stream(readable: Readable): AsyncIterable<Buffer> {
+    // Read all data from the readable stream first
+    const buffers: Buffer[] = [];
+    for await (const chunk of readable) {
+        buffers.push(chunk);
+    }
+    if (buffers.length === 0) {
+        return; // No data
+    }
 
-function unbzip2Stream() {
-    var bufferQueue: Buffer[] = [];
-    var hasBytes: number = 0;
-    var blockSize: number = 0;
-    var broken: boolean = false;
-    var done: boolean = false;
-    var bitReader: any = null;
-    var streamCRC: number | null = null;
+    const totalBuffer = Buffer.concat(buffers);
+    let dataConsumed = 0;
+    const getNextBuffer = function() {
+        if (dataConsumed >= totalBuffer.length) {
+            return Buffer.alloc(0);
+        }
+        // Return the remaining data
+        const remaining = totalBuffer.subarray(dataConsumed);
+        dataConsumed = totalBuffer.length;
+        return remaining;
+    };
 
-    function decompressBlock(push: (data: Buffer | null) => void): boolean {
-        if(!blockSize){
-            blockSize = bz2.header(bitReader);
-            //console.error("got header of", blockSize);
-            streamCRC = 0;
-            return true;
-        }else{
-            var bufsize: number = 100000 * blockSize;
-            var buf: Int32Array = new Int32Array(bufsize);
+    const bitReader = bitIterator(getNextBuffer);
+    let blockSize = 0;
+    let streamCRC: number | null = null;
+    let currentStreamBuffer: number[] = [];
 
-            var chunk: number[] = [];
-            var f = function(b: number): void {
-                chunk.push(b);
+    while (true) {
+        if (!blockSize) {
+            try {
+                blockSize = bz2.header(bitReader);
+                streamCRC = 0;
+            } catch (e: any) {
+                // If header fails and we have data, it might be end of input
+                if (currentStreamBuffer.length > 0) {
+                    yield Buffer.from(currentStreamBuffer);
+                }
+                return;
+            }
+        } else {
+            const bufsize = 100000 * blockSize;
+            const buf = new Int32Array(bufsize);
+
+            const f = function(b: number): void {
+                currentStreamBuffer.push(b);
             };
 
             streamCRC = bz2.decompress(bitReader, f, buf, bufsize, streamCRC);
             if (streamCRC === null) {
-                // reset for next bzip2 header
-                blockSize = 0;
-                return false;
-            }else{
-                //console.error('decompressed', chunk.length,'bytes');
-                push(Buffer.from(chunk));
-                return true;
+                // End of current stream, yield it
+                yield Buffer.from(currentStreamBuffer);
+                currentStreamBuffer = [];
+                blockSize = 0; // Reset for next stream
             }
         }
     }
-
-    var outlength: number = 0;
-    function decompressAndQueue(stream: ThroughStream): boolean {
-        if (broken) return false;
-        try {
-            return decompressBlock(function(d: Buffer | null) {
-                stream.queue(d);
-                if (d !== null) {
-                    //console.error('write at', outlength.toString(16));
-                    outlength += d.length;
-                } else {
-                    //console.error('written EOS');
-                }
-            });
-        } catch(e) {
-            //console.error(e);
-            stream.emit('error', e);
-            broken = true;
-            return false;
-        }
-    }
-
-    return through(
-        function write(this: ThroughStream, data: Buffer): void {
-            //console.error('received', data.length,'bytes in', typeof data);
-            bufferQueue.push(data);
-            hasBytes += data.length;
-            if (bitReader === null) {
-                bitReader = bitIterator(function() {
-                    return bufferQueue.shift() || Buffer.alloc(0);
-                });
-            }
-            while (!broken && hasBytes - bitReader.bytesRead + 1 >= ((25000 + 100000 * blockSize) || 4)){
-                //console.error('decompressing with', hasBytes - bitReader.bytesRead + 1, 'bytes in buffer');
-                decompressAndQueue(this);
-            }
-        },
-        function end(this: ThroughStream): void {
-            //console.error('last compressing with', hasBytes, 'bytes in buffer');
-            while (!broken && bitReader && hasBytes > bitReader.bytesRead){
-                decompressAndQueue(this);
-            }
-            if (!broken) {
-                if (streamCRC !== null)
-                    this.emit('error', new Error("input stream ended prematurely"));
-                this.queue(null);
-            }
-        }
-    );
 }
 
 export = unbzip2Stream;

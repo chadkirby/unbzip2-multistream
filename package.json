@@ -1,5 +1,5 @@
 {
-  "name": "unbzip2-stream",
+  "name": "@ckirby/unbzip2-multistream",
   "version": "1.4.2",
   "description": "streaming unbzip2 implementation in TypeScript for Node.js",
   "keywords": [
@@ -41,12 +41,8 @@
     "concat-stream": "^1.4.7",
     "stream-equal": "^1.1.1",
     "tape": "^4.9.2",
-    "ts-node": "10.9.2",
     "typescript": "5.9.2"
   },
-  "dependencies": {
-    "buffer": "^5.2.1",
-    "through": "^2.3.8"
-  },
+  "dependencies": {},
   "license": "MIT"
 }
