@@ -2,3 +2,7 @@ node_modules
 test/fixtures/vmlinux.bin*
 npm-debug.log
 dist/
+*.d.ts
+*.d.ts.map
+index.js
+lib/*.js
