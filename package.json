@@ -8,9 +8,11 @@
     "bz2",
     "stream",
     "streaming",
-    "decompress",
-    "through"
+    "decompress"
   ],
+  "publishConfig": {
+    "access": "public"
+  },
   "scripts": {
     "prepare": "tsc",
     "build": "tsc",
@@ -20,7 +22,7 @@
   },
   "author": "Jan Bölsche <jan@lagomorph.de>",
   "repository": {
-    "url": "https://github.com/chadkirby/unbzip2-multistream.git",
+    "url": "git+https://github.com/chadkirby/unbzip2-multistream.git",
     "type": "git"
   },
   "bugs": {
