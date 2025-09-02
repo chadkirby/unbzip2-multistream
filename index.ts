@@ -9,18 +9,15 @@ interface ReadableStream {
 
 async function* unbzip2Stream(readable: ReadableStream): AsyncIterable<Uint8Array> {
     // Accumulate enough data to process efficiently
-    const MIN_BUFFER_SIZE = 64 * 1024; // 64KB minimum before starting
+    const MIN_BUFFER_SIZE = 256 * 1024; // 256KB minimum before starting - increased for complex streams
     let dataBuffer: Uint8Array[] = [];
     let currentOffset = 0;
     let isReadingDone = false;
-    let iterator: AsyncIterator<Uint8Array> | null = null;
+    const iterator = readable[Symbol.asyncIterator]();
 
     // Async function to accumulate data
     const accumulateData = async (targetSize: number): Promise<void> => {
         while (getTotalBufferedSize() < targetSize && !isReadingDone) {
-            if (!iterator) {
-                iterator = readable[Symbol.asyncIterator]();
-            }
             const result = await iterator.next();
             if (result.done) {
                 isReadingDone = true;
@@ -59,15 +56,19 @@ async function* unbzip2Stream(readable: ReadableStream): AsyncIterable<Uint8Arra
 
     // Synchronous buffer provider for bit iterator
     const getNextBuffer = (): Uint8Array => {
-        // If we have buffered data, return it
+        // If we have buffered data available, return it
         if (dataBuffer.length > 0) {
             return getCurrentChunk();
         }
-        // No buffered data - this indicates we need more
+        // No buffered data
         if (isReadingDone) {
-            return new Uint8Array(0); // End of stream
+            // True end of stream - return empty array
+            return new Uint8Array(0);
         }
-        // Need more data but we're synchronous - return empty array for now
+
+        // This is the critical case: bit reader needs more data but we're synchronous
+        // We can't actually wait for more data here, so return empty to indicate end
+        // The caller should handle this by accumulating more data first
         return new Uint8Array(0);
     };
 
@@ -75,11 +76,9 @@ async function* unbzip2Stream(readable: ReadableStream): AsyncIterable<Uint8Arra
     let blockSize = 0;
     let streamCRC: number | null = null;
     let currentStreamBuffer: number[] = [];
-    let lastBytesRead = 0; // Track actual bytes consumed
-    let stallCount = 0; // Count consecutive stalls
 
     while (true) {
-        // Ensure we have enough buffered data before attempting to read header/stream
+        // Accumulate data if needed before processing
         if (!isReadingDone && getTotalBufferedSize() < MIN_BUFFER_SIZE) {
             await accumulateData(MIN_BUFFER_SIZE);
         }
@@ -88,8 +87,6 @@ async function* unbzip2Stream(readable: ReadableStream): AsyncIterable<Uint8Arra
             try {
                 blockSize = bz2.header(bitReader);
                 streamCRC = 0;
-                lastBytesRead = bitReader.bytesRead;
-                stallCount = 0;
             } catch (e: any) {
                 // If header fails, check if we have buffered data to process
                 if (currentStreamBuffer.length > 0) {
@@ -99,12 +96,13 @@ async function* unbzip2Stream(readable: ReadableStream): AsyncIterable<Uint8Arra
                 if (isReadingDone && dataBuffer.length === 0) {
                     return;
                 }
-                // Try accumulating more data
+                // Accumulate more data and retry
                 if (!isReadingDone) {
-                    await accumulateData(MIN_BUFFER_SIZE * 2);
-                    continue;
+                    await accumulateData(MIN_BUFFER_SIZE);
+                } else {
+                    return;
                 }
-                return;
+                continue;
             }
         } else {
             const bufsize = 100000 * blockSize;
@@ -114,9 +112,7 @@ async function* unbzip2Stream(readable: ReadableStream): AsyncIterable<Uint8Arra
                 currentStreamBuffer.push(b);
             };
 
-            const preCallBytes = bitReader.bytesRead;
             streamCRC = bz2.decompress(bitReader, f, buf, bufsize, streamCRC);
-            const postCallBytes = bitReader.bytesRead;
 
             // If streamCRC is null, we've finished a complete stream
             if (streamCRC === null) {
@@ -124,23 +120,9 @@ async function* unbzip2Stream(readable: ReadableStream): AsyncIterable<Uint8Arra
                 yield new Uint8Array(currentStreamBuffer);
                 currentStreamBuffer = [];
                 blockSize = 0; // Reset for next stream
-                stallCount = 0; // Reset stall count for new stream
 
                 // Yield to allow consumer to process this stream
                 await new Promise(resolve => setImmediate(resolve));
-            } else {
-                // Check for actual progress based on bytes consumed
-                if (postCallBytes > preCallBytes) {
-                    stallCount = 0; // Made progress, reset stall counter
-                } else {
-                    stallCount++;
-                    // If we've stalled multiple times and buffer is getting low, get more data
-                    const bufferedSize = getTotalBufferedSize();
-                    if (stallCount > 2 && bufferedSize < MIN_BUFFER_SIZE / 2 && !isReadingDone) {
-                        await accumulateData(MIN_BUFFER_SIZE);
-                        stallCount = 0; // Reset after accumulating more data
-                    }
-                }
             }
         }
 
@@ -150,11 +132,7 @@ async function* unbzip2Stream(readable: ReadableStream): AsyncIterable<Uint8Arra
         }
     }
 
-    // Clean up iterator if we created one
-    // TypeScript can't always infer iterator is non-null here, but runtime guarantees it
-    if (iterator) {
-        await iterator!.return?.();
-    }
+    await iterator.return?.();
 }
 
 export = unbzip2Stream;

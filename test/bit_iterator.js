@@ -42,14 +42,14 @@ test('each iterator has an independent bytesRead property', function(t) {
         return buffs[ii++];
     });
 
-    t.equal(bi1.bytesRead, 0);
-    t.equal(bi2.bytesRead, 0);
+    t.equal(bi1.bytesRead, 0, 'bi1 should have 0 bytes read');
+    t.equal(bi2.bytesRead, 0, 'bi2 should have 0 bytes read');
     bi1(9);
-    t.equal(bi1.bytesRead, 2);
-    t.equal(bi2.bytesRead, 0);
+    t.equal(bi1.bytesRead, 2, 'bi1 should have 2 bytes read');
+    t.equal(bi2.bytesRead, 0, 'bi2 should have 0 bytes read');
     bi2(7);
-    t.equal(bi1.bytesRead, 2);
-    t.equal(bi2.bytesRead, 1);
+    t.equal(bi1.bytesRead, 2, 'bi1 should have 2 bytes read');
+    t.equal(bi2.bytesRead, 1, 'bi2 should have 1 byte read');
 });
 
 test('aligns to the byte boundary when passed null', function(t) {
@@ -59,8 +59,8 @@ test('aligns to the byte boundary when passed null', function(t) {
         return Buffer.from([0x0f,0x10,0x01,0x80]);
     });
 
-    t.equal(bi(7), 0x7);
+    t.equal(bi(7), 0x7, 'first 7 bits of 0x0f');
     bi(null)
-    t.equal(bi.bytesRead, 1);
-    t.equal(bi(4), 0x1)
+    t.equal(bi.bytesRead, 1, 'bi should have 1 byte read');
+    t.equal(bi(4), 0x1, 'next 4 bits should be 0x1');
 });
