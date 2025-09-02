@@ -5,55 +5,104 @@ interface ReadableStream {
   [Symbol.asyncIterator](): AsyncIterableIterator<Uint8Array>;
 }
 
-// Concatenate multiple Uint8Arrays into one
-function concatUint8Arrays(arrays: Uint8Array[]): Uint8Array {
-    const totalLength = arrays.reduce((acc, arr) => acc + arr.length, 0);
-    const result = new Uint8Array(totalLength);
-    let offset = 0;
-    for (const arr of arrays) {
-        result.set(arr, offset);
-        offset += arr.length;
-    }
-    return result;
-}
+
 
 async function* unbzip2Stream(readable: ReadableStream): AsyncIterable<Uint8Array> {
+    // Accumulate enough data to process efficiently
+    const MIN_BUFFER_SIZE = 64 * 1024; // 64KB minimum before starting
+    let dataBuffer: Uint8Array[] = [];
+    let currentOffset = 0;
+    let isReadingDone = false;
+    let iterator: AsyncIterator<Uint8Array> | null = null;
 
-    // Read all data from the readable stream first
-    const buffers: Uint8Array[] = [];
-    for await (const chunk of readable) {
-        buffers.push(chunk);
-    }
-    if (buffers.length === 0) {
-        return; // No data
-    }
+    // Async function to accumulate data
+    const accumulateData = async (targetSize: number): Promise<void> => {
+        while (getTotalBufferedSize() < targetSize && !isReadingDone) {
+            if (!iterator) {
+                iterator = readable[Symbol.asyncIterator]();
+            }
+            const result = await iterator.next();
+            if (result.done) {
+                isReadingDone = true;
+                break;
+            }
+            dataBuffer.push(result.value);
+        }
+    };
 
-    const totalBuffer = concatUint8Arrays(buffers);
-    let dataConsumed = 0;
-    const getNextBuffer = function() {
-        if (dataConsumed >= totalBuffer.length) {
+    // Get total buffered data size
+    const getTotalBufferedSize = (): number => {
+        return dataBuffer.reduce((total, chunk) => total + chunk.length, 0);
+    };
+
+    // Get current chunk and advance offset
+    const getCurrentChunk = (): Uint8Array => {
+        // If no data in buffer, return empty
+        if (dataBuffer.length === 0) {
             return new Uint8Array(0);
         }
-        // Return the remaining data
-        const remaining = totalBuffer.subarray(dataConsumed);
-        dataConsumed = totalBuffer.length;
-        return remaining;
+
+        // If we've consumed the current chunk, move to next
+        if (currentOffset >= dataBuffer[0].length) {
+            if (dataBuffer.length > 1) {
+                dataBuffer.shift();
+                currentOffset = 0;
+            } else {
+                return new Uint8Array(0);
+            }
+        }
+
+        const chunk = dataBuffer[0].subarray(currentOffset);
+        currentOffset = dataBuffer[0].length; // Consume entire chunk
+        return chunk;
+    };
+
+    // Synchronous buffer provider for bit iterator
+    const getNextBuffer = (): Uint8Array => {
+        // If we have buffered data, return it
+        if (dataBuffer.length > 0) {
+            return getCurrentChunk();
+        }
+        // No buffered data - this indicates we need more
+        if (isReadingDone) {
+            return new Uint8Array(0); // End of stream
+        }
+        // Need more data but we're synchronous - return empty array for now
+        return new Uint8Array(0);
     };
 
     const bitReader = bitIterator(getNextBuffer);
     let blockSize = 0;
     let streamCRC: number | null = null;
     let currentStreamBuffer: number[] = [];
+    let lastBytesRead = 0; // Track actual bytes consumed
+    let stallCount = 0; // Count consecutive stalls
 
     while (true) {
+        // Ensure we have enough buffered data before attempting to read header/stream
+        if (!isReadingDone && getTotalBufferedSize() < MIN_BUFFER_SIZE) {
+            await accumulateData(MIN_BUFFER_SIZE);
+        }
+
         if (!blockSize) {
             try {
                 blockSize = bz2.header(bitReader);
                 streamCRC = 0;
+                lastBytesRead = bitReader.bytesRead;
+                stallCount = 0;
             } catch (e: any) {
-                // If header fails and we have data, it might be end of input
+                // If header fails, check if we have buffered data to process
                 if (currentStreamBuffer.length > 0) {
                     yield new Uint8Array(currentStreamBuffer);
+                }
+                // If no more data coming and nothing buffered, we're done
+                if (isReadingDone && dataBuffer.length === 0) {
+                    return;
+                }
+                // Try accumulating more data
+                if (!isReadingDone) {
+                    await accumulateData(MIN_BUFFER_SIZE * 2);
+                    continue;
                 }
                 return;
             }
@@ -65,14 +114,46 @@ async function* unbzip2Stream(readable: ReadableStream): AsyncIterable<Uint8Arra
                 currentStreamBuffer.push(b);
             };
 
+            const preCallBytes = bitReader.bytesRead;
             streamCRC = bz2.decompress(bitReader, f, buf, bufsize, streamCRC);
+            const postCallBytes = bitReader.bytesRead;
+
+            // If streamCRC is null, we've finished a complete stream
             if (streamCRC === null) {
                 // End of current stream, yield it
                 yield new Uint8Array(currentStreamBuffer);
                 currentStreamBuffer = [];
                 blockSize = 0; // Reset for next stream
+                stallCount = 0; // Reset stall count for new stream
+
+                // Yield to allow consumer to process this stream
+                await new Promise(resolve => setImmediate(resolve));
+            } else {
+                // Check for actual progress based on bytes consumed
+                if (postCallBytes > preCallBytes) {
+                    stallCount = 0; // Made progress, reset stall counter
+                } else {
+                    stallCount++;
+                    // If we've stalled multiple times and buffer is getting low, get more data
+                    const bufferedSize = getTotalBufferedSize();
+                    if (stallCount > 2 && bufferedSize < MIN_BUFFER_SIZE / 2 && !isReadingDone) {
+                        await accumulateData(MIN_BUFFER_SIZE);
+                        stallCount = 0; // Reset after accumulating more data
+                    }
+                }
             }
         }
+
+        // Break if no more data and nothing left to process
+        if (isReadingDone && dataBuffer.length === 0 && currentStreamBuffer.length === 0) {
+            break;
+        }
+    }
+
+    // Clean up iterator if we created one
+    // TypeScript can't always infer iterator is non-null here, but runtime guarantees it
+    if (iterator) {
+        await iterator!.return?.();
     }
 }
 
