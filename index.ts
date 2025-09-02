@@ -37,7 +37,13 @@ async function* unbzip2Stream(readable: ReadableStream): AsyncIterable<Uint8Arra
 
     // Get current chunk and advance offset
     const getCurrentChunk = (): Uint8Array => {
-        if (currentOffset >= dataBuffer[0]?.length) {
+        // If no data in buffer, return empty
+        if (dataBuffer.length === 0) {
+            return new Uint8Array(0);
+        }
+
+        // If we've consumed the current chunk, move to next
+        if (currentOffset >= dataBuffer[0].length) {
             if (dataBuffer.length > 1) {
                 dataBuffer.shift();
                 currentOffset = 0;
@@ -45,6 +51,7 @@ async function* unbzip2Stream(readable: ReadableStream): AsyncIterable<Uint8Arra
                 return new Uint8Array(0);
             }
         }
+
         const chunk = dataBuffer[0].subarray(currentOffset);
         currentOffset = dataBuffer[0].length; // Consume entire chunk
         return chunk;
@@ -68,6 +75,8 @@ async function* unbzip2Stream(readable: ReadableStream): AsyncIterable<Uint8Arra
     let blockSize = 0;
     let streamCRC: number | null = null;
     let currentStreamBuffer: number[] = [];
+    let lastBytesRead = 0; // Track actual bytes consumed
+    let stallCount = 0; // Count consecutive stalls
 
     while (true) {
         // Ensure we have enough buffered data before attempting to read header/stream
@@ -79,6 +88,8 @@ async function* unbzip2Stream(readable: ReadableStream): AsyncIterable<Uint8Arra
             try {
                 blockSize = bz2.header(bitReader);
                 streamCRC = 0;
+                lastBytesRead = bitReader.bytesRead;
+                stallCount = 0;
             } catch (e: any) {
                 // If header fails, check if we have buffered data to process
                 if (currentStreamBuffer.length > 0) {
@@ -103,8 +114,9 @@ async function* unbzip2Stream(readable: ReadableStream): AsyncIterable<Uint8Arra
                 currentStreamBuffer.push(b);
             };
 
-            let lastStreamCRC = streamCRC;
+            const preCallBytes = bitReader.bytesRead;
             streamCRC = bz2.decompress(bitReader, f, buf, bufsize, streamCRC);
+            const postCallBytes = bitReader.bytesRead;
 
             // If streamCRC is null, we've finished a complete stream
             if (streamCRC === null) {
@@ -112,13 +124,22 @@ async function* unbzip2Stream(readable: ReadableStream): AsyncIterable<Uint8Arra
                 yield new Uint8Array(currentStreamBuffer);
                 currentStreamBuffer = [];
                 blockSize = 0; // Reset for next stream
+                stallCount = 0; // Reset stall count for new stream
 
                 // Yield to allow consumer to process this stream
                 await new Promise(resolve => setImmediate(resolve));
-            } else if (lastStreamCRC === streamCRC) {
-                // Progress stalled - we may need more data
-                if (!isReadingDone) {
-                    await accumulateData(MIN_BUFFER_SIZE);
+            } else {
+                // Check for actual progress based on bytes consumed
+                if (postCallBytes > preCallBytes) {
+                    stallCount = 0; // Made progress, reset stall counter
+                } else {
+                    stallCount++;
+                    // If we've stalled multiple times and buffer is getting low, get more data
+                    const bufferedSize = getTotalBufferedSize();
+                    if (stallCount > 2 && bufferedSize < MIN_BUFFER_SIZE / 2 && !isReadingDone) {
+                        await accumulateData(MIN_BUFFER_SIZE);
+                        stallCount = 0; // Reset after accumulating more data
+                    }
                 }
             }
         }
@@ -130,8 +151,9 @@ async function* unbzip2Stream(readable: ReadableStream): AsyncIterable<Uint8Arra
     }
 
     // Clean up iterator if we created one
+    // TypeScript can't always infer iterator is non-null here, but runtime guarantees it
     if (iterator) {
-        await (iterator as AsyncIterator<Uint8Array>).return?.();
+        await iterator!.return?.();
     }
 }
 
