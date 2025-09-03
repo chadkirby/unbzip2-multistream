@@ -1,6 +1,6 @@
 {
   "name": "@ckirby/unbzip2-multistream",
-  "version": "2.1.2",
+  "version": "2.1.3",
   "description": "streaming unbzip2 implementation in TypeScript for Node.js",
   "keywords": [
     "bzip",
