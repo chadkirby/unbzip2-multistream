@@ -66,10 +66,10 @@ async function* unbzip2Stream(readable: ReadableStream): AsyncIterable<Uint8Arra
             return new Uint8Array(0);
         }
 
-        // This is the critical case: bit reader needs more data but we're synchronous
-        // We can't actually wait for more data here, so return empty to indicate end
-        // The caller should handle this by accumulating more data first
-        return new Uint8Array(0);
+        // This should not happen in the current implementation
+        // since we accumulate data before calling decompress
+        // But if it does, throw an error that will be caught and retried
+        throw new Error("Bit reader requested data synchronously but none available");
     };
 
     const bitReader = bitIterator(getNextBuffer);
